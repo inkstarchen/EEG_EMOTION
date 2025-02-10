@@ -15,7 +15,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(map(str, gpus))
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') 
 dataset_dir = './seed/'
 files = os.listdir(dataset_dir)
-
+files = [f for f in files if f.endswith('.npz')]
 # Basic Module for loading and saving
 class BasicModule(nn.Module):
     def __init__(self):
