@@ -1,4 +1,5 @@
-import torch # pytorch包
+# environment 
+import torch 
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
@@ -12,6 +13,9 @@ gpus = [0]
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
 os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(map(str, gpus))
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') 
+dataset_dir = './seed/'
+files = os.listdir(dataset_dir)
+
 # Basic Module for loading and saving
 class BasicModule(nn.Module):
     def __init__(self):
@@ -29,7 +33,7 @@ class BasicModule(nn.Module):
             torch.save(self.stat_dict(),path)
             return path
 
-# Three part of module
+# domain-class discriminator
 class DCD(BasicModule):
     def __init__(self,in_features=128,high_features=64):
         super(DCD,self).__init__()
@@ -42,6 +46,7 @@ class DCD(BasicModule):
     def forward(self,x):
         return self.seq(x)
 
+# Classifier
 class Classifier(BasicModule):
     def __init__(self,in_features=64):
         super(Classifier,self).__init__()
@@ -51,6 +56,7 @@ class Classifier(BasicModule):
     def forward(self,x):
         return self.seq(x)
 
+# Encoder
 class Encoder(BasicModule):
     def __init__(self):
         super(Encoder, self).__init__()
@@ -77,29 +83,43 @@ class MyDataset(torch.utils.data.Dataset):
     def __len__(self):
         return self.images.shape[0]
 
-def get_data_label(filename='1_1'):
-    dataset_dir = './eeg_used_1s/'
-    npz_data = np.load(dataset_dir + filename + '.npz', allow_pickle=True)
-    
-    train_data = pickle.loads(npz_data['train_data'])
-    train_labels = npz_data['train_label'] 
-    test_data = pickle.loads(npz_data['test_data'])
-    test_labels = npz_data['test_label'] 
-    
-    train_data = np.stack((train_data['delta'],train_data['theta'],train_data['alpha'],train_data['beta'],train_data['gamma'])).reshape(2010,62,-1)
-    test_data = np.stack((test_data['delta'],test_data['theta'],test_data['alpha'],test_data['beta'],test_data['gamma'])).reshape(1384,62,-1)
-    
+# read the file and return the data and label
+def get_data_label(filename='EEG_1_0.npz'):
+    dataset_dir = './seed/'
+    npz_data = np.load(dataset_dir + filename ,allow_pickle = True)
+    train_data = npz_data['train_data']
+    train_label = npz_data['label']
     for i in range(5):
-        ave_train = np.mean(train_data[:,:,i])
-        ave_test = np.mean(test_data[:,:,i])
-        train_data[:,:,i] = 2*(train_data[:,:,i] - ave_train)/ave_train
-        test_data[:,:,i] = 2*(test_data[:,:,i] - ave_test)/ave_test
+        ave = np.mean(train_data[:, :, i])
+        train_data[:, :, i] = 2*(train_data[:, :, i] - ave)/ave
+    data = train_data.reshape(train_data.shape[0],-1)
+    return data, train_label
     
-    data = np.vstack((train_data,test_data))
-    data = data.reshape(data.shape[0],-1)
-    labels = np.hstack((train_labels, test_labels))
-    return data, labels
 
+# def get_data_label(filename='1_1'):
+#     dataset_dir = './eeg_used_1s/'
+#     npz_data = np.load(dataset_dir + filename + '.npz', allow_pickle=True)
+    
+#     train_data = pickle.loads(npz_data['train_data'])
+#     train_labels = npz_data['train_label'] 
+#     test_data = pickle.loads(npz_data['test_data'])
+#     test_labels = npz_data['test_label'] 
+    
+#     train_data = np.stack((train_data['delta'],train_data['theta'],train_data['alpha'],train_data['beta'],train_data['gamma'])).reshape(-1,62,5)
+#     test_data = np.stack((test_data['delta'],test_data['theta'],test_data['alpha'],test_data['beta'],test_data['gamma'])).reshape(-1,62,5)
+    
+#     for i in range(5):
+#         ave_train = np.mean(train_data[:,:,i])
+#         ave_test = np.mean(test_data[:,:,i])
+#         train_data[:,:,i] = 2*(train_data[:,:,i] - ave_train)/ave_train
+#         test_data[:,:,i] = 2*(test_data[:,:,i] - ave_test)/ave_test
+    
+#     data = np.vstack((train_data,test_data))
+#     data = data.reshape(data.shape[0],-1)
+#     labels = np.hstack((train_labels, test_labels))
+#     return data, labels
+
+# form the Dataloader for trainning
 def data_loader(filename='1_1'):
     data, label = get_data_label(filename)
     dataloader = torch.utils.data.DataLoader(
@@ -110,6 +130,7 @@ def data_loader(filename='1_1'):
         num_workers=8)
     return dataloader
 
+# Shuffle the data
 def sample_data(filename='1_1'):
     data, label = get_data_label(filename)
     n = len(data)
@@ -121,7 +142,7 @@ def sample_data(filename='1_1'):
         X[i], Y[i] = torch.tensor(data[index]), torch.tensor(label[index])
 
     return X,Y
-
+# Data were obtained evenly across categories
 def create_target_samples(n, filename='1_1'):
     data, label = get_data_label(filename)
     X, Y = [], []
@@ -142,10 +163,11 @@ def create_target_samples(n, filename='1_1'):
     label_1 = torch.from_numpy(np.array(Y))
     return data_1, label_1
 
+# creating six groups for adversial trainning
 def create_groups(X_s, Y_s, X_t, Y_t, seed=1):
     torch.manual_seed(1 + seed)
     torch.cuda.manual_seed(1 + seed)
-    n = X_t.shape[0]
+    n = X_t.shape[0]  
     classes = torch.unique(Y_t)
     classes = classes[torch.randperm(len(classes))]
 
@@ -171,23 +193,23 @@ def create_groups(X_s, Y_s, X_t, Y_t, seed=1):
 
     for i in range(class_num):
         for j in range(shot):
-            G1.append((X_s[source_matrix[i][j*2]], X_s[source_matrix[i][j*2+1]]))
+            G1.append((X_s[source_matrix[i][j*2]], X_s[source_matrix[i][j*2+1]])) # G1:all source-domain same label
             Y1.append((Y_s[source_matrix[i][j*2]], Y_s[source_matrix[i][j*2+1]]))
-            G2.append((X_s[source_matrix[i][j]], X_t[target_matrix[i][j]]))
+            G2.append((X_s[source_matrix[i][j]], X_t[target_matrix[i][j]]))       # G2:source and target domain same label
             Y2.append((Y_s[source_matrix[i][j]], Y_t[target_matrix[i][j]]))
 
-            G3.append((X_s[source_matrix[i % 2][j]], X_s[source_matrix[(i+1) % 2][j]]))
+            G3.append((X_s[source_matrix[i % 2][j]], X_s[source_matrix[(i+1) % 2][j]]))  # G3: all source-domain different label
             Y3.append((Y_s[source_matrix[i % 2][j]], Y_s[source_matrix[(i + 1) % 2][j]]))
-            G4.append((X_s[source_matrix[i % 2][j]], X_t[target_matrix[(i+1) % 2][j]]))
+            G4.append((X_s[source_matrix[i % 2][j]], X_t[target_matrix[(i+1) % 2][j]]))  # G4: source and target domain different label
             Y4.append((Y_s[source_matrix[i % 2][j]], Y_t[target_matrix[(i + 1) % 2][j]]))
 
 
     for i in range(class_num):
         for j in range(shot):
-            G5.append((X_t[target_matrix[i][j]], X_t[target_matrix[i][int((j+1)%shot)]]))
+            G5.append((X_t[target_matrix[i][j]], X_t[target_matrix[i][int((j+1)%shot)]]))  # G5: all target-domain same label
             Y5.append((Y_t[target_matrix[i][j]], Y_t[target_matrix[i][int((j+1)%shot)]]))
             if i == 0:
-                G6.append((X_t[target_matrix[i][j]], X_t[target_matrix[(i+1) % 2][j]]))
+                G6.append((X_t[target_matrix[i][j]], X_t[target_matrix[(i+1) % 2][j]]))    # G6: all target-domain different label
                 Y6.append((Y_t[target_matrix[i][j]], Y_t[target_matrix[(i+1) % 2][j]]))
             else:
                 G6.append((X_t[target_matrix[i][j]], X_t[target_matrix[(i + 1) % 2][int((j + 1) % shot)]]))
@@ -223,23 +245,18 @@ dropout = 0.5
 
 torch.cuda.manual_seed(1)
 
-all_targets = [] #所有对象的数据名
-for i in range(42):
-    if i // 3 != 5 and i // 3 != 6:
-        all_targets.append(str((i // 3 + 1)) + '_' + str((i % 3 + 1)))
-
 # 在三个中随机选一个
 subject_files = []
-for i in range(0,len(all_targets),3):
-    subject_files.append(all_targets[i + int(torch.randperm(3)[1])])
+for i in range(0,len(files),3):
+    subject_files.append(files[i + int(torch.randperm(3)[1])])
 
 target_file = subject_files[torch.randperm(len(subject_files))[0]]
 dic = {}
-all_targets.remove(target_file)
+subject_files.remove(target_file)
 
 for index, source_file in enumerate(subject_files):
     maximum = -1
-    train_dataloader = data_loader(source_file)
+    train_dataloader = data_loader(source_file)  # loading the dataset source and target
     test_dataloader = data_loader(target_file)
     
     classifier = Classifier()
@@ -253,7 +270,7 @@ for index, source_file in enumerate(subject_files):
     optimizer=torch.optim.Adam(list(encoder.parameters())+list(classifier.parameters()),lr=0.001)
     
     accuracy_all = []
-    for epoch in range(n_epoch_1):
+    for epoch in range(n_epoch_1): # trainning on the source domain
         acc_1 = 0
         for data, labels in train_dataloader:
             data = data.to(device)
@@ -266,31 +283,26 @@ for index, source_file in enumerate(subject_files):
             acc_1 = acc_1 + (torch.max(y_pred, 1)[1] == labels).float().mean().item()
             
         accuracy_1 = round(acc_1 / float(len(train_dataloader)), 3)
-        print("step1----Epoch" + source_file + " %d/%d  accuracy: %.3f " % (epoch + 1, n_epoch_1 ,accuracy_1))
+        print("step1----Epoch %d/%d  accuracy: %.3f " % (epoch + 1, n_epoch_1 ,accuracy_1))
     
         acc = 0
-        for data, labels in test_dataloader:
+        for data, labels in test_dataloader: # testing on the target domain
             data = data.to(device)
             labels = labels.to(device)
             y_test_pred = classifier(encoder(data))
             acc = acc + (torch.max(y_test_pred, 1)[1] == labels).float().mean().item()
     
         accuracy = round(acc / float(len(test_dataloader)), 3)
-        if accuracy_1 > maximum:
-            maximum = accuracy_1
-            encoder_saved, classifier_saved = encoder, classifier
         accuracy_all.append(accuracy)
     
         print("step1----Epoch %d/%d  accuracy: %.3f " % (epoch + 1, n_epoch_1 ,accuracy))
-
-    dic[index] = {'filename':source_file,'accuracy':maximum, 'encoder':encoder_saved, 'classifier':classifier_saved}
     
     X_s, Y_s = sample_data(source_file)
     
     X_t, Y_t = create_target_samples(n_target_samples,target_file)
     
     optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=0.0001)
-    
+    #--------------------------adversial learning----------------------------------#
     for epoch in range(n_epoch_2):
         groups, group_label = sample_groups(X_s, Y_s, X_t, Y_t, seed=epoch)
         n_iters = 6 * len(groups[1])
@@ -302,8 +314,8 @@ for index, source_file in enumerate(subject_files):
         X1, X2 = [], []
         ground_truths = []
         for index in range(n_iters):
-           ground_truth = index_list[index] // len(groups[1])
-           x1, x2 = groups[ground_truth][index_list[index] - len(groups[1]) * ground_truth]
+           ground_truth = index_list[index] // len(groups[1])   #the truth of which group the data pair come from 
+           x1, x2 = groups[ground_truth][index_list[index] - len(groups[1]) * ground_truth]  # loading the data pair
            X1.append(x1)
            X2.append(x2)
            ground_truths.append(ground_truth)
@@ -327,6 +339,7 @@ for index, source_file in enumerate(subject_files):
                ground_truths = []
                
         print("step2----Epoch %d/%d loss:%.3f" % (epoch + 1, n_epoch_2, np.mean(loss_mean)))
+    
     optimizer_g_h = torch.optim.Adam(list(encoder.parameters()) + list(classifier.parameters()), lr=0.0001)
     optimizer_d = torch.optim.Adam(discriminator.parameters(), lr=0.0001)
     
@@ -334,7 +347,7 @@ for index, source_file in enumerate(subject_files):
     accuracy_all_2 = []
     auc_all = []
     
-    path = './eeg_used_1s/' + str(target_file)
+    path = './seed/' + target_file[:-4] + '/results'
     isExists = os.path.exists(path)
     
     if isExists:
@@ -342,7 +355,7 @@ for index, source_file in enumerate(subject_files):
     else:
         os.makedirs(path)
         
-    path2 = './eeg_used_1s/' + str(target_file) + "/save_model"
+    path2 = './seed/' + target_file[:-4] + "/save_model"
     isExists2 = os.path.exists(path2)
     if isExists2:
         pass
@@ -471,15 +484,168 @@ for index, source_file in enumerate(subject_files):
             # auc += metrics.roc_auc_score(labels.cpu(), torch.max(y_test_pred, 1)[1].cpu(), )
         
         accuracy = round(acc / float(len(test_dataloader)), 3)
-        auc_temp = round(auc/ float(len(test_dataloader)), 3)
+        auc_temp = round(auc / float(len(test_dataloader)), 3)
         
         if accuracy > maxium:
             maxium = accuracy
-            torch.save(encoder, path2 + '/encode_%s.pth' % (source_file))
-            torch.save(classifier, path2 + '/classifier_%s.pth' % (source_file))
+            torch.save(encoder, path2 + '/encode_%s.pth' % (source_file[:-4]))
+            torch.save(classifier, path2 + '/classifier_%s.pth' % (source_file[:-4]))
         accuracy_all_2.append(accuracy)
         auc_all.append(auc_temp)
     
     
         print("step3----Epoch %d/%d  accuracy: %.3f " % (epoch + 1, n_epoch_3, accuracy))
+    
+    save_dir = path + '/' + source_file[:-4] + '.npz'
+    np.savez(save_dir, accuracy_all = accuracy_all , accuracy_all_2 = accuracy_all_2, auc_all = auc_all)
 
+batch_size = 30
+path =  "./seed/" + target_file[:-4] + '/save_model/'
+path1 = "./seed/" + target_file[:-4] + '/results'
+
+use_cuda = True if torch.cuda.is_available() else False
+device = torch.device('cuda:0') if use_cuda else torch.device('cpu')
+####读取准确率#####找出结果中最好的三个
+
+final = []
+name = []
+or_all = []
+auc_all = []
+
+
+print("target: ", target_file )
+
+
+for source_file in subject_files:
+
+    dir_t = "./seed/" + target_file[:-4] + '/results/' + source_file[:-4] + '.npz'
+    a = np.load(dir_t)
+    data = a['accuracy_all_2']
+    or_data = a['accuracy_all']
+    auc = a['auc_all']
+    # print(data.shape)
+    temp = np.max(data)
+    auc_temp = np.max(auc)
+    or_all.append(np.mean(or_data))
+    final.append(temp)  ## 每个人对应source迁移最好的结果
+    auc_all.append(auc_temp)  ##  每个人对应source中auc 最好的结果
+    name.append(source_file[:-4])
+    
+sort_list = np.argsort((-1) * np.array(or_all))  ##  返回的是排序后的坐标
+print(or_all)
+print(sort_list)
+k = 14
+a = sort_list  ##  代表从大到小的作为排序
+# print(a)
+index = a[0:k]
+# print(index)
+max_value = np.max(final)  ##  是
+print(np.max(final))  ##  十四个人中最好的结果
+temp = final[a[0]]  ##  对应最好的
+print("corres", temp)  ##  对应最好的结果
+aa = []
+for i in range(len(index)):
+    aa.append(name[index[i]])
+
+test_list = []
+final_k = 5
+for i in range(final_k):
+    test_list.append(aa[i])
+print(test_list)
+
+# save_dir = path1 = "./" + opt.target  + '.xlsx'
+# import xlsxwriter
+# workbook = xlsxwriter.Workbook(save_dir)
+# worksheet = workbook.add_worksheet()
+# aa = final.__len__()
+# for i in range(int(aa)):
+#     worksheet.write(i, 0, name[i])  # 第i行0列
+#     worksheet.write(i, 2, final[i])  # 第i行1列
+# workbook.close()
+
+
+def get_model(file):
+    encode = torch.load(path+"encode_%s.pth"%(file), weights_only=False)
+    classifier = torch.load(path + "classifier_%s.pth" % (file),weights_only=False)
+    return encode,classifier
+# def get_model(file):
+#     encode = torch.load(path+"encode_%s.pth"%(file))
+#     classifier = torch.load(path + "classifier_%s.pth" % (file))
+#     model = classifier(encode)
+#     return model
+from sklearn.preprocessing import label_binarize
+test_dataloader = data_loader(target_file)
+
+def Caculate(weight):
+    Encode=[]
+    Classifier=[]
+    for file in test_list:
+
+        Ez, Cz=get_model(file)
+        # Ez = Ez.to(device)
+        # Cz = Cz.to(device)
+        # model_temp.to(device)
+
+        Encode.append(Ez)
+        Classifier.append(Cz)
+    acc = 0
+    auc = 0
+    for data, labels in test_dataloader:
+        data = data.to(device)
+        labels = (labels.long()).to(device)
+        Y = torch.zeros(batch_size, 3).to(device)
+        for i in range(len(Encode)):
+            Encode[i].eval()
+            Classifier[i].eval()
+            Y+=Classifier[i](Encode[i](data))*weight[i]
+        acc = acc + (torch.max(Y, 1)[1] == labels).float().mean().item()
+        y_one_hot = labels.cpu().detach().numpy()
+        y_one_hot = label_binarize(y_one_hot, classes=np.arange(3))
+        a = Y.cpu().detach().numpy()
+        auc += metrics.roc_auc_score(y_one_hot, a, average='micro')
+        # auc += metrics.roc_auc_score(labels.cpu(), torch.max(Y, 1)[1].cpu())
+    accuracy = round(acc / float(len(test_dataloader)), 3)
+    auc_temp = round(auc / float(len(test_dataloader)), 3)
+    print("accuracy: %.3f " % (accuracy))
+    return accuracy, auc_temp
+print("len(test_list)", len(test_list))
+
+weight=[1/len(test_list)]*len(test_list)
+
+save_accuracy, save_auc = Caculate(weight)
+save_dir = path1 = './seed/' + target_file[:-4] + '/result.xlsx'
+import xlsxwriter
+workbook = xlsxwriter.Workbook(save_dir)
+worksheet = workbook.add_worksheet()
+aa = final.__len__()
+for i in range(int(aa)):
+    worksheet.write(i, 0, name[i])  # 第i行0列
+    worksheet.write(i, 1, final[i])  # 第i行1列
+    worksheet.write(i, 8, auc_all[i])  # 第i行1列
+bb = or_all.__len__()
+for j in range(bb):
+    worksheet.write(j, 5, or_all[j] )  # 第i行0列
+    # worksheet.write(i, 1, final[i])  # 第i行1列
+
+worksheet.write(0, 2, "max")
+worksheet.write(1, 2, max_value)
+worksheet.write(0, 3, "mean")
+worksheet.write(1, 3, save_accuracy)
+worksheet.write(0, 4, "k")
+worksheet.write(1, 4, final_k)
+worksheet.write(0, 6, test_list[0])
+# worksheet.write(1, 6, test_list[1])
+# worksheet.write(2, 6, test_list[2])
+# worksheet.write(3, 6, test_list[3])
+# worksheet.write(4, 6, test_list[4])
+
+worksheet.write(0, 7, "or_data")
+worksheet.write(1, 7, temp)
+
+worksheet.write(0, 9, "mean_auc")
+worksheet.write(1, 9, save_auc)
+
+
+workbook.close()
+print("over")
+   
