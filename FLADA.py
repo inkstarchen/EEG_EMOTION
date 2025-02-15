@@ -13,9 +13,7 @@ gpus = [0]
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
 os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(map(str, gpus))
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') 
-dataset_dir = './seed/'
-files = os.listdir(dataset_dir)
-files = [f for f in files if f.endswith('.npz')]
+
 # Basic Module for loading and saving
 class BasicModule(nn.Module):
     def __init__(self):
@@ -39,8 +37,7 @@ class DCD(BasicModule):
         super(DCD,self).__init__()
         self.seq = nn.Sequential(nn.Linear(in_features, high_features),
                                  nn.ReLU(),
-                                 nn.Linear(high_features, 32),
-                                 nn.Linear(32,6),
+                                 nn.Linear(high_features, 6),
                                  nn.Softmax(dim=1))
 
     def forward(self,x):
@@ -48,27 +45,66 @@ class DCD(BasicModule):
 
 # Classifier
 class Classifier(BasicModule):
-    def __init__(self,in_features=64):
+    def __init__(self,input_size, hidden_size, num_layers, output_size):
         super(Classifier,self).__init__()
-        self.seq = nn.Sequential(nn.Linear(in_features,3),
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
+        self.seq = nn.Sequential(nn.Linear(hidden_size,3),
                                  nn.Softmax(dim=1))
 
     def forward(self,x):
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(device)
+        out, _ = self.gru(x.unsqueeze(1),h0)
+        out = self.seq(out[:,-1,:])
         return self.seq(x)
-
+        
 # Encoder
-class Encoder(BasicModule):
+import torch
+import torch.nn as nn
+
+class Encoder(nn.Module):
     def __init__(self):
         super(Encoder, self).__init__()
-        self.seq = nn.Sequential(nn.Linear(310, 256),
-                                 nn.ReLU(),
-                                 nn.Linear(256, 128),
-                                 nn.ReLU(),
-                                 nn.Linear(128, 64))
+        
+        # the shape of input (batch_size, input_channels, input_height, input_width)
+        self.input_channels = 62
+        self.input_height = 5
+        self.input_width = 1
+        
+        # part for generating the weight
+        self.weight_generator = nn.Sequential(
+            nn.BatchNorm2d(62),
+            nn.AdaptiveAvgPool2d((1, 1)),  # compress the space dimension to  1x1
+            nn.Flatten(),  # flatten to (batch_size, input_channels)
+            nn.Linear(self.input_channels, 12),  # FC layer
+            nn.ReLU(),
+            nn.Linear(12, self.input_channels),  # FC layer
+            nn.Sigmoid()  # output weight，range [0, 1]
+        )
+        
+        # part of main network
+        self.main_network = nn.Sequential(
+            nn.Flatten(),  # flatten the input
+            nn.Linear(310, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64))
 
     def forward(self, x):
-        x = x.float()
-        return self.seq(x)
+        # 生成权重
+        x = x.float().reshape((30,62,5,-1))
+        weights = self.weight_generator(x)  # (batch_size, input_channels)
+        
+        # 对输入数据进行加权处理
+        x = x * weights.unsqueeze(-1).unsqueeze(-1)  # 广播权重到 (batch_size, input_channels, input_height, input_width)
+        
+        # 通过主网络
+        x = self.main_network(x)
+        
+        return x
 
 # dataLoader
 class MyDataset(torch.utils.data.Dataset):
@@ -92,7 +128,7 @@ def get_data_label(filename='EEG_1_0.npz'):
     for i in range(5):
         ave = np.mean(train_data[:, :, i])
         train_data[:, :, i] = 2*(train_data[:, :, i] - ave)/ave
-    data = train_data.reshape(train_data.shape[0],-1)
+    data = train_data.reshape(-1,62,5)
     return data, train_label
     
 
@@ -134,7 +170,7 @@ def data_loader(filename='1_1'):
 def sample_data(filename='1_1'):
     data, label = get_data_label(filename)
     n = len(data)
-    X = torch.Tensor(n,310)
+    X = torch.Tensor(n,62,5)
     Y = torch.LongTensor(n)
 
     inds = torch.randperm(len(data))
@@ -239,27 +275,16 @@ n_epoch_2 = 120
 n_epoch_3 = 50
 original_domain = ''
 target_domain = ''
-n_target_samples = 240
-batch_size = 30
-dropout = 0.5
+n_target_samples = 100
+batch_size = 64
 
-torch.cuda.manual_seed(1)
-
-# 在三个中随机选一个
-subject_files = []
-for i in range(0,len(files),3):
-    subject_files.append(files[i + int(torch.randperm(3)[1])])
-
-target_file = subject_files[torch.randperm(len(subject_files))[0]]
-dic = {}
-subject_files.remove(target_file)
-
+print(target_file)
 for index, source_file in enumerate(subject_files):
     maximum = -1
     train_dataloader = data_loader(source_file)  # loading the dataset source and target
     test_dataloader = data_loader(target_file)
     
-    classifier = Classifier()
+    classifier = Classifier(64,64,3,3)
     encoder = Encoder()
     discriminator = DCD(in_features=128)
     
@@ -275,11 +300,12 @@ for index, source_file in enumerate(subject_files):
         for data, labels in train_dataloader:
             data = data.to(device)
             labels = (labels.long()).to(device)
-            optimizer.zero_grad()
+            
             y_pred = classifier(encoder(data))
             loss = loss_fn(y_pred, labels)
             loss.backward()
             optimizer.step()
+            optimizer.zero_grad()
             acc_1 = acc_1 + (torch.max(y_pred, 1)[1] == labels).float().mean().item()
             
         accuracy_1 = round(acc_1 / float(len(train_dataloader)), 3)
@@ -328,12 +354,12 @@ for index, source_file in enumerate(subject_files):
                X1 = torch.tensor(X1).to(device)
                X2 = torch.tensor(X2).to(device)
                ground_truths = ground_truths.to(device)
-               optimizer_D.zero_grad()
                X_cat = torch.cat([encoder(X1), encoder(X2)], 1)
                y_pred = discriminator(X_cat.detach())
                loss = loss_fn(y_pred, ground_truths)
                loss.backward()
                optimizer_D.step()
+               optimizer_D.zero_grad()
                loss_mean.append(loss.item())
                X1, X2 = [], []
                ground_truths = []
@@ -393,7 +419,7 @@ for index, source_file in enumerate(subject_files):
             y1, y2 = groups_label_2[ground_truth][index_list[index] - len(G2) * ground_truth]
         
         
-            dcd_label = 0 if ground_truth == 0 or ground_truth ==2 else 2
+            dcd_label = 0 if ground_truth == 0 or ground_truth ==2 else 1
             X1.append(x1)
             X2.append(x2)
             ground_truths_y1.append(y1)
@@ -411,7 +437,7 @@ for index, source_file in enumerate(subject_files):
                 ground_truths_y1 = ground_truths_y1.to(device)
                 ground_truths_y2 = ground_truths_y2.to(device)
                 dcd_labels = dcd_labels.to(device)
-                optimizer_g_h.zero_grad()
+                
                 encoder_X1 = encoder(X1)
                 encoder_X2 = encoder(X2)
                 
@@ -429,6 +455,7 @@ for index, source_file in enumerate(subject_files):
                 
                 loss_sum.backward()
                 optimizer_g_h.step()
+                optimizer_g_h.zero_grad()
                 
                 X1 = []
                 X2 = []
@@ -457,12 +484,13 @@ for index, source_file in enumerate(subject_files):
                 X2 = X2.to(device)
                 ground_truths = ground_truths.to(device)
                 
-                optimizer_d.zero_grad()
+                
                 X_cat = torch.cat([encoder(X1), encoder(X2)], 1)
                 y_pred = discriminator(X_cat.detach())
                 loss = loss_fn(y_pred, ground_truths)
                 loss.backward()
                 optimizer_d.step()
+                optimizer_d.zero_grad()
                 X1 = []
                 X2 = []
                 ground_truths = []  ##   两个轮流训练
