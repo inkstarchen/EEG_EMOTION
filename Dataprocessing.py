@@ -7,7 +7,7 @@ def cal_de_feature(signal):
 
 def moving_average(data, window_size):
     return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
-    import numpy as np
+import numpy as np
 import torch
 import os
 import pickle
