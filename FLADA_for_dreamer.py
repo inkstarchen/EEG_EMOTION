@@ -16,7 +16,14 @@ torch.cuda.manual_seed(2)
 subject_files = list(files)
 target_file = '7.npz'
 subject_files.remove(target_file)
+
+# 训练环境
+gpus = [0]
+os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(map(str, gpus))
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') 
 # Basic Module for loading and saving
+
 class BasicModule(nn.Module):
     def __init__(self):
         super(BasicModule,self).__init__()
