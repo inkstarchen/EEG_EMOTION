@@ -299,8 +299,8 @@ else:
     os.makedirs(para_save_dir)
 
 for ind, source_file in enumerate(subject_files):
-    workbook = xlsxwriter.Workbook(para_save_dir + 'para_test_7.xlsx')
-    para_test = workbook.add_worksheet()
+    # workbook = xlsxwriter.Workbook(para_save_dir + 'para_test_7.xlsx')
+    # para_test = workbook.add_worksheet()
     maximum = -1
     train_dataloader = data_loader(source_file)  # loading the dataset source and target
     test_dataloader = data_loader(target_file)
@@ -549,8 +549,8 @@ for ind, source_file in enumerate(subject_files):
     
     save_dir = path + '/' + source_file[:-4] + '.npz'
     np.savez(save_dir, accuracy_all = accuracy_all , accuracy_all_2 = accuracy_all_2, auc_all = auc_all)
-    workbook.close()
-    break
+    # workbook.close()
+  
 batch_size = 30
 path = para_save_dir + target_file[:-4] + '/save_model/'
 path1 = para_save_dir + target_file[:-4] + '/results'
